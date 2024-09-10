@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 /*!
 Rust wrapper for Apple's Grand Central Dispatch (GCD).
 
@@ -74,8 +75,6 @@ assert!(*count.lock().unwrap() >= 15);
 
 */
 
-#![warn(missing_docs)]
-
 use std::error::Error;
 use std::fmt;
 use std::mem;
@@ -93,8 +92,8 @@ pub use crate::source::TimerNode;
 /// Raw foreign function interface for libdispatch.
 pub mod ffi;
 mod group;
-mod queue;
 mod once;
+mod queue;
 mod sem;
 mod source;
 
@@ -110,58 +109,94 @@ impl fmt::Display for WaitTimeout {
     }
 }
 
-impl Error for WaitTimeout { }
+impl Error for WaitTimeout {}
 
 fn time_after_delay(delay: Duration) -> dispatch_time_t {
-    delay.as_secs().checked_mul(1_000_000_000).and_then(|i| {
-        i.checked_add(delay.subsec_nanos() as u64)
-    }).and_then(|i| {
-        if i < (i64::max_value() as u64) { Some(i as i64) } else { None }
-    }).map_or(DISPATCH_TIME_FOREVER, |i| unsafe {
-        dispatch_time(DISPATCH_TIME_NOW, i)
-    })
+    delay
+        .as_secs()
+        .checked_mul(1_000_000_000)
+        .and_then(|i| i.checked_add(delay.subsec_nanos() as u64))
+        .and_then(|i| {
+            if i < (i64::MAX as u64) {
+                Some(i as i64)
+            } else {
+                None
+            }
+        })
+        .map_or(DISPATCH_TIME_FOREVER, |i| unsafe {
+            dispatch_time(DISPATCH_TIME_NOW, i)
+        })
 }
 
 fn context_and_function<F>(closure: F) -> (*mut c_void, dispatch_function_t)
-        where F: FnOnce() {
-    extern fn work_execute_closure<F>(context: Box<F>) where F: FnOnce() {
+where
+    F: FnOnce(),
+{
+    extern "C" fn work_execute_closure<F>(context: Box<F>)
+    where
+        F: FnOnce(),
+    {
         (*context)();
     }
 
     let closure = Box::new(closure);
-    let func: extern fn(Box<F>) = work_execute_closure::<F>;
+    let func: extern "C" fn(Box<F>) = work_execute_closure::<F>;
     unsafe {
-        (mem::transmute(closure), mem::transmute(func))
+        (
+            mem::transmute::<std::boxed::Box<F>, *mut std::ffi::c_void>(closure),
+            mem::transmute::<extern "C" fn(std::boxed::Box<F>), extern "C" fn(*mut std::ffi::c_void)>(
+                func,
+            ),
+        )
     }
 }
 
-fn context_and_sync_function<F>(closure: &mut Option<F>) ->
-        (*mut c_void, dispatch_function_t)
-        where F: FnOnce() {
-    extern fn work_read_closure<F>(context: &mut Option<F>) where F: FnOnce() {
+fn context_and_sync_function<F>(closure: &mut Option<F>) -> (*mut c_void, dispatch_function_t)
+where
+    F: FnOnce(),
+{
+    extern "C" fn work_read_closure<F>(context: &mut Option<F>)
+    where
+        F: FnOnce(),
+    {
         // This is always passed Some, so it's safe to unwrap
         let closure = context.take().unwrap();
         closure();
     }
 
     let context: *mut Option<F> = closure;
-    let func: extern fn(&mut Option<F>) = work_read_closure::<F>;
+    let func: extern "C" fn(&mut Option<F>) = work_read_closure::<F>;
     unsafe {
-        (context as *mut c_void, mem::transmute(func))
+        (
+            context as *mut c_void,
+            mem::transmute::<
+                for<'a> extern "C" fn(&'a mut std::option::Option<F>),
+                extern "C" fn(*mut std::ffi::c_void),
+            >(func),
+        )
     }
 }
 
-fn context_and_apply_function<F>(closure: &F) ->
-        (*mut c_void, extern fn(*mut c_void, usize))
-        where F: Fn(usize) {
-    extern fn work_apply_closure<F>(context: &F, iter: usize)
-            where F: Fn(usize) {
+fn context_and_apply_function<F>(closure: &F) -> (*mut c_void, extern "C" fn(*mut c_void, usize))
+where
+    F: Fn(usize),
+{
+    extern "C" fn work_apply_closure<F>(context: &F, iter: usize)
+    where
+        F: Fn(usize),
+    {
         context(iter);
     }
 
     let context: *const F = closure;
-    let func: extern fn(&F, usize) = work_apply_closure::<F>;
+    let func: extern "C" fn(&F, usize) = work_apply_closure::<F>;
     unsafe {
-        (context as *mut c_void, mem::transmute(func))
+        (
+            context as *mut c_void,
+            mem::transmute::<
+                for<'a> extern "C" fn(&'a F, usize),
+                extern "C" fn(*mut std::ffi::c_void, usize),
+            >(func),
+        )
     }
 }

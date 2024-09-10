@@ -10,12 +10,13 @@ use crate::time_after_delay;
 
 /// Source: https://stackoverflow.com/a/32270215/5214809
 extern "C" fn timer_handler(arg: *mut c_void) {
-    let closure: &mut Box<dyn FnMut()> = unsafe { transmute(arg) };
+    let closure: &mut Box<dyn FnMut()> =
+        unsafe { &mut *(arg as *mut std::boxed::Box<dyn std::ops::FnMut()>) };
     closure();
 }
 
 /// A timer node.
-/// 
+///
 /// Schedule a timer to run a block of code after a delay using `TimerNode::schedule`.
 /// Drop the timer to cancel it.
 pub struct TimerNode {
@@ -42,7 +43,12 @@ impl TimerNode {
     /// # Returns
     /// A `Result` containing either a `TimerNode` or an `Error`.
     ///
-    pub fn schedule<F>(interval: Duration, delay: Duration, leeway: Option<Duration>, block: F) -> Result<Self, Error>
+    pub fn schedule<F>(
+        interval: Duration,
+        delay: Duration,
+        leeway: Option<Duration>,
+        block: F,
+    ) -> Result<Self, Error>
     where
         F: FnMut() + Send,
     {
@@ -61,12 +67,23 @@ impl TimerNode {
         let when = time_after_delay(delay);
         let leeway = leeway.unwrap_or(Duration::from_millis(0));
         unsafe {
-            dispatch_set_context(timer, transmute(context));
+            dispatch_set_context(
+                timer,
+                transmute::<
+                    std::boxed::Box<std::boxed::Box<dyn std::ops::FnMut()>>,
+                    *mut std::ffi::c_void,
+                >(context),
+            );
             dispatch_source_set_event_handler_f(timer, timer_handler);
-            dispatch_source_set_timer(timer, when, interval.as_nanos() as u64, leeway.as_nanos() as u64);
+            dispatch_source_set_timer(
+                timer,
+                when,
+                interval.as_nanos() as u64,
+                leeway.as_nanos() as u64,
+            );
             dispatch_resume(timer);
         }
-        let node = TimerNode { timer: timer };
+        let node = TimerNode { timer };
         Ok(node)
     }
 
@@ -81,7 +98,12 @@ impl TimerNode {
         let leeway = leeway.unwrap_or(Duration::from_millis(0));
         unsafe {
             dispatch_suspend(self.timer);
-            dispatch_source_set_timer(self.timer, when, interval.as_nanos() as u64, leeway.as_nanos() as u64);
+            dispatch_source_set_timer(
+                self.timer,
+                when,
+                interval.as_nanos() as u64,
+                leeway.as_nanos() as u64,
+            );
             dispatch_resume(self.timer);
         };
     }
@@ -119,8 +141,13 @@ mod test {
             *count += 1;
             println!("Hello, counter! {}", *count);
         };
-        let _node =
-            TimerNode::schedule(Duration::from_millis(10), Duration::from_secs(0), None, block).unwrap();
+        let _node = TimerNode::schedule(
+            Duration::from_millis(10),
+            Duration::from_secs(0),
+            None,
+            block,
+        )
+        .unwrap();
         thread::sleep(Duration::from_millis(100));
         assert!(*count.lock().unwrap() >= 10);
     }
